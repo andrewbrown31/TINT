@@ -10,9 +10,39 @@ import numpy as np
 import pandas as pd
 import pyart
 from scipy import ndimage
+from skimage.measure import regionprops
+from skimage.feature import peak_local_max
+import datetime as dt
 
 from .grid_utils import get_filtered_frame
 
+def calc_speed_and_dir(df, dx):
+    """From a pandas dataframe, use the grid_x, grid_y and time to calculate speed and 
+    direction. Use central finite difference for both speed and direction"""
+    if df.shape[0] > 1:
+        x0, y0, t0 = (df["grid_x"].iloc[0], df["grid_y"].iloc[0], df["time"].iloc[0])
+        dist = np.array(np.sqrt(np.square(x0-df["grid_x"]) + \
+                    np.square(y0-df["grid_y"])))
+        times = pd.to_datetime(df["time"]) - t0
+        delta_t = (times / np.arange(df.shape[0])).mean().seconds
+        speed = np.gradient(dist * dx, delta_t)
+        angles = []
+        for i in np.arange(df.shape[0]):
+            if i == 0:
+                angle = (np.arctan2(df["grid_y"].iloc[i+1] - df["grid_y"].iloc[i], df["grid_x"].iloc[i+1] - df["grid_x"].iloc[i]))
+            elif i == df.shape[0]-1:
+                angle = (np.arctan2(df["grid_y"].iloc[i] - df["grid_y"].iloc[i-1], df["grid_x"].iloc[i] - df["grid_x"].iloc[i-1]))
+            else:
+                angle = (np.arctan2(df["grid_y"].iloc[i+1] - df["grid_y"].iloc[i-1], df["grid_x"].iloc[i+1] - df["grid_x"].iloc[i-1]))
+            angles.append((90 - ( (180/np.pi) * angle ) + 360) % 360)
+        df["angle"] = np.round(angles, 3)
+        df["speed"] = np.round(speed, 3)
+    else:
+        print("SHAPE LESS THAN 1")
+        print(df)
+        df["angle"] = np.nan
+        df["speed"] = np.nan
+    return df
 
 def get_object_center(obj_id, labeled_image):
     """ Returns index of center pixel of the given object id from labeled
@@ -151,7 +181,8 @@ def single_max(obj_ind, raw, params):
 
 def get_object_prop(image1, grid1, field, record, params):
     """ Returns dictionary of object properties for all objects found in
-    image1. """
+    image1. 
+    """
     id1 = []
     center = []
     grid_x = []
@@ -162,10 +193,15 @@ def get_object_prop(image1, grid1, field, record, params):
     field_max = []
     max_height = []
     volume = []
+    local_max = []
     nobj = np.max(image1)
+
+    skimage_props_km1 = ["major_axis_length", "minor_axis_length"]
+    skimage_props_km2 = ["area"]
 
     unit_dim = record.grid_size
     unit_alt = unit_dim[0]/1000
+    unit_len = unit_dim[1]/1000
     unit_area = (unit_dim[1]*unit_dim[2])/(1000**2)
     unit_vol = (unit_dim[0]*unit_dim[1]*unit_dim[2])/(1000**3)
 
@@ -196,12 +232,22 @@ def get_object_prop(image1, grid1, field, record, params):
 
         # raw 3D grid stats
         obj_slices = [raw3D[:, ind[0], ind[1]] for ind in obj_index]
-        field_max.append(np.max(obj_slices))
+        field_max.append(np.nanmax(obj_slices))
         filtered_slices = [obj_slice > params['FIELD_THRESH']
                            for obj_slice in obj_slices]
         heights = [np.arange(raw3D.shape[0])[ind] for ind in filtered_slices]
         max_height.append(np.max(np.concatenate(heights)) * unit_alt)
         volume.append(np.sum(filtered_slices) * unit_vol)
+
+    #Get the number of local maxima using the column maximum reflectivity, 
+        # considring only reflectivity above the background reflectivity + DEPTH. Local maxima 
+        # must beand MIN_DISTANCE (in pixels) apart
+        crop = np.where(image1==obj, np.nanmax(raw3D,axis=0), 0)
+        local_max_inds = peak_local_max(crop, indices=True,
+              threshold_abs=np.nanmin(np.where(image1==obj, np.nanmax(raw3D,axis=0), np.nan)) + params["FIELD_DEPTH"],
+              exclude_border=0,
+              min_distance=params["LOCAL_MAX_DIST"])
+        local_max.append(len(local_max_inds))
 
     # cell isolation
     isolation = check_isolation(raw3D, image1, record.grid_size, params)
@@ -210,17 +256,29 @@ def get_object_prop(image1, grid1, field, record, params):
                'center': center,
                'grid_x': grid_x,
                'grid_y': grid_y,
-               'area': area,
+               'area_km': area,
                'field_max': field_max,
                'max_height': max_height,
                'volume': volume,
                'lon': longitude,
                'lat': latitude,
-               'isolated': isolation}
+               'isolated': isolation,
+               'local_max': local_max}
+
+    if params['SKIMAGE_PROPS']:
+        rp = regionprops(image1, intensity_image=raw3D.max(axis=0))
+        for p in params['SKIMAGE_PROPS']:
+            if p in skimage_props_km1:
+                objprop[p] = [r[p] * unit_len for r in rp]
+            elif p in skimage_props_km2:
+                objprop[p] = [r[p] * unit_area for r in rp]
+            else:
+                objprop[p] = [r[p] for r in rp]
+
     return objprop
 
 
-def write_tracks(old_tracks, record, current_objects, obj_props):
+def write_tracks(old_tracks, record, current_objects, obj_props, params):
     """ Writes all cell information to tracks dataframe. """
     print('Writing tracks for scan', record.scan)
 
@@ -236,12 +294,20 @@ def write_tracks(old_tracks, record, current_objects, obj_props):
         'grid_y': obj_props['grid_y'],
         'lon': obj_props['lon'],
         'lat': obj_props['lat'],
-        'area': obj_props['area'],
+        'area_km': obj_props['area_km'],
         'vol': obj_props['volume'],
         'max': obj_props['field_max'],
         'max_alt': obj_props['max_height'],
-        'isolated': obj_props['isolated']
+        'isolated': obj_props['isolated'],
+        'local_max': np.round(obj_props['local_max'], 3),
     })
+    if params['SKIMAGE_PROPS']:
+        for p in params['SKIMAGE_PROPS']:
+            try:
+               new_tracks[p] = np.round(obj_props[p], 3)
+            except:
+               new_tracks[p] = obj_props[p]
+
     new_tracks.set_index(['scan', 'uid'], inplace=True)
     tracks = old_tracks.append(new_tracks)
     return tracks
