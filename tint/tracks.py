@@ -16,8 +16,9 @@ from .grid_utils import get_grid_size, get_radar_info, extract_grid_data
 from .helpers import Record, Counter
 from .phase_correlation import get_global_shift
 from .matching import get_pairs
-from .objects import init_current_objects, update_current_objects
+from .objects import init_current_objects, update_current_objects, calc_speed_and_dir
 from .objects import get_object_prop, write_tracks
+from .write_griddata import Setup_h5File, write_griddata
 
 # Tracking Parameter Defaults
 FIELD_THRESH = 32
@@ -30,6 +31,9 @@ MAX_DISPARITY = 999
 MAX_FLOW_MAG = 50
 MAX_SHIFT_DISP = 15
 GS_ALT = 1500
+SKIMAGE_PROPS = False
+FIELD_DEPTH = 6
+LOCAL_MAX_DIST = 4
 
 """
 Tracking Parameter Guide
@@ -62,7 +66,14 @@ MAX_SHIFT_DISP : meters per second
     considered in agreement. See correct_shift in tint.matching.
 GS_ALT : meters
     Altitude in meters at which to perform phase correlation for global shift
-    calculation. See correct_shift in tint.matching.
+SKIMAGE_PROPS : list of str
+    Extra object properties to output from skimage.measure.regionprops
+FIELD_DEPTH : units of 'field' attribute
+    When finding the number of local maxima in each object, only consider
+    candiates above FIELD_THRESH + FIELD_DEPTH
+LOCAL_MAX_DIST : pixels
+    When finding the number of local maxima in each object, candidates must
+    be at least LOCAL_MAX_DIST pixels apart
 """
 
 
@@ -111,7 +122,10 @@ class Cell_tracks(object):
                        'MAX_SHIFT_DISP': MAX_SHIFT_DISP,
                        'ISO_THRESH': ISO_THRESH,
                        'ISO_SMOOTH': ISO_SMOOTH,
-                       'GS_ALT': GS_ALT}
+                       'GS_ALT': GS_ALT,
+                       'SKIMAGE_PROPS' : SKIMAGE_PROPS,
+                       'FIELD_DEPTH' : FIELD_DEPTH,
+                       'LOCAL_MAX_DIST' : LOCAL_MAX_DIST}
 
         self.field = field
         self.grid_size = None
@@ -143,12 +157,13 @@ class Cell_tracks(object):
         self.counter = self.__saved_counter
         self.current_objects = self.__saved_objects
 
-    def get_tracks(self, grids):
+    def get_tracks(self, grids, outdir):
         """ Obtains tracks given a list of pyart grid objects. This is the
         primary method of the tracks class. This method makes use of all of the
         functions and helper classes defined above. """
         start_time = datetime.datetime.now()
 
+        FirstLoop = True
         if self.record is None:
             # tracks object being initialized
             grid_obj2 = next(grids)
@@ -229,10 +244,17 @@ class Cell_tracks(object):
                                         self.record, self.params)
             self.record.add_uids(self.current_objects)
             self.tracks = write_tracks(self.tracks, self.record,
-                                       self.current_objects, obj_props)
+                                       self.current_objects, obj_props, self.params)
+            #From the tracks pandas DataFrame, get the speed and direction at each time for each uid
+            self.tracks = self.tracks.groupby("uid").apply(calc_speed_and_dir, dx=self.record.grid_size[1])
+            if FirstLoop:
+                outgrids = Setup_h5File(grid_obj1, outdir)
+                FirstLoop = False
+            outgrids = write_griddata(outgrids,frame1,grid_obj1,self.field,self.current_objects,self.record,obj_props) 
             del grid_obj1, raw1, frame1, global_shift, pairs, obj_props
             # scan loop end
         self.__load()
+        outgrids.close()
         time_elapsed = datetime.datetime.now() - start_time
         print('\n')
         print('time elapsed', np.round(time_elapsed.seconds/60, 1), 'minutes')
