@@ -94,6 +94,12 @@ def full_domain(tobj, grids, tmp_dir, vmin=-8, vmax=64,
                           vmin=vmin, vmax=vmax, mask_outside=False,
                           cmap=cmap, transform=projection, ax=ax, **kwargs)
 
+        #Plot FIELD_THRESH outline 
+        x,y=np.meshgrid(grid.to_xarray()["lon"], grid.to_xarray()["lat"])
+        ax.contour(x,y,grid.to_xarray()[tobj.field].max(["time","z"]) \
+                  >= tobj.params["FIELD_THRESH"],\
+                  colors="k", transform=projection, levels=0, linewidths=1)
+
         if nframe in tobj.tracks.index.levels[0]:
             frame_tracks = tobj.tracks.loc[nframe]
 
