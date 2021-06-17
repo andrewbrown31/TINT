@@ -11,6 +11,7 @@ import datetime
 
 import numpy as np
 import pandas as pd
+import pyart
 
 from .grid_utils import get_grid_size, get_radar_info, extract_grid_data
 from .helpers import Record, Counter
@@ -157,7 +158,7 @@ class Cell_tracks(object):
         self.counter = self.__saved_counter
         self.current_objects = self.__saved_objects
 
-    def get_tracks(self, grids, outdir):
+    def get_tracks(self, grids, radars, outdir):
         """ Obtains tracks given a list of pyart grid objects. This is the
         primary method of the tracks class. This method makes use of all of the
         functions and helper classes defined above. """
@@ -167,6 +168,7 @@ class Cell_tracks(object):
         if self.record is None:
             # tracks object being initialized
             grid_obj2 = next(grids)
+            radar_obj2 = next(radars)
             self.grid_size = get_grid_size(grid_obj2)
             self.radar_info = get_radar_info(grid_obj2)
             self.counter = Counter()
@@ -174,6 +176,7 @@ class Cell_tracks(object):
         else:
             # tracks object being updated
             grid_obj2 = self.last_grid
+            radar_obj2 = self.last_radar
             self.tracks.drop(self.record.scan + 1)  # last scan is overwritten
 
         if self.current_objects is None:
@@ -186,13 +189,16 @@ class Cell_tracks(object):
 
         while grid_obj2 is not None:
             grid_obj1 = grid_obj2
+            radar_obj1 = radar_obj2
             raw1 = raw2
             frame1 = frame2
 
             try:
                 grid_obj2 = next(grids)
+                radar_obj2 = next(radars)
             except StopIteration:
                 grid_obj2 = None
+                radar_obj2 = None
 
             if grid_obj2 is not None:
                 self.record.update_scan_and_time(grid_obj1, grid_obj2)
@@ -204,6 +210,7 @@ class Cell_tracks(object):
                 # setup to write final scan
                 self.__save()
                 self.last_grid = grid_obj1
+                self.last_radar = radar_obj1
                 self.record.update_scan_and_time(grid_obj1)
                 raw2 = None
                 frame2 = np.zeros_like(frame1)
@@ -241,7 +248,7 @@ class Cell_tracks(object):
                 )
 
             obj_props = get_object_prop(frame1, grid_obj1, self.field,
-                                        self.record, self.params)
+                                        self.record, self.params, radar_obj1)
             self.record.add_uids(self.current_objects)
             self.tracks = write_tracks(self.tracks, self.record,
                                        self.current_objects, obj_props, self.params)
@@ -251,7 +258,7 @@ class Cell_tracks(object):
                 outgrids = Setup_h5File(grid_obj1, outdir)
                 FirstLoop = False
             outgrids = write_griddata(outgrids,frame1,grid_obj1,self.field,self.current_objects,self.record,obj_props) 
-            del grid_obj1, raw1, frame1, global_shift, pairs, obj_props
+            del grid_obj1, raw1, frame1, global_shift, pairs, obj_props, radar_obj1
             # scan loop end
         self.__load()
         outgrids.close()
