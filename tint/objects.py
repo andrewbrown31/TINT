@@ -13,35 +13,47 @@ from scipy import ndimage
 from skimage.measure import regionprops
 from skimage.feature import peak_local_max
 import datetime as dt
+from scipy.interpolate import NearestNDInterpolator
+from pymeso import llsd
 
 from .grid_utils import get_filtered_frame
 
 def calc_speed_and_dir(df, dx):
-    """From a pandas dataframe, use the grid_x, grid_y and time to calculate speed and 
-    direction. Use central finite difference for both speed and direction"""
+    """From a pandas dataframe, use the grid_x, grid_y and time columns to calculate speed and 
+    direction. Returns both an instantaneous (central finite difference) and average
+    (based on linear least squares regression fit to distance/time) speed, as well as 
+    direction based on central difference"""
     if df.shape[0] > 1:
-        x0, y0, t0 = (df["grid_x"].iloc[0], df["grid_y"].iloc[0], df["time"].iloc[0])
-        dist = np.array(np.sqrt(np.square(x0-df["grid_x"]) + \
-                    np.square(y0-df["grid_y"])))
+        x, y, t0 = (df["grid_x"].values, df["grid_y"].values, df["time"].iloc[0])
+        dist = np.cumsum(np.concatenate(([0], [np.sqrt(np.square(x[i-1] - x[i]) + \
+		np.square(y[i-1] - y[i]))  for i in np.arange(1, len(x))]))) 
         times = pd.to_datetime(df["time"]) - t0
         delta_t = (times / np.arange(df.shape[0])).mean().seconds
-        speed = np.gradient(dist * dx, delta_t)
+        speed_inst = np.gradient(dist * dx, delta_t)
+        yp = dist * dx
+        xp = np.array([t.seconds for t in times])
+        fit = np.polyfit(xp, yp, deg=1)
+        speed = fit[0]
+
         angles = []
         for i in np.arange(df.shape[0]):
             if i == 0:
-                angle = (np.arctan2(df["grid_y"].iloc[i+1] - df["grid_y"].iloc[i], df["grid_x"].iloc[i+1] - df["grid_x"].iloc[i]))
+                angle = (np.arctan2(df["grid_y"].iloc[i+1] - df["grid_y"].iloc[i],\
+			df["grid_x"].iloc[i+1] - df["grid_x"].iloc[i]))
             elif i == df.shape[0]-1:
-                angle = (np.arctan2(df["grid_y"].iloc[i] - df["grid_y"].iloc[i-1], df["grid_x"].iloc[i] - df["grid_x"].iloc[i-1]))
+                angle = (np.arctan2(df["grid_y"].iloc[i] - df["grid_y"].iloc[i-1],\
+			df["grid_x"].iloc[i] - df["grid_x"].iloc[i-1]))
             else:
-                angle = (np.arctan2(df["grid_y"].iloc[i+1] - df["grid_y"].iloc[i-1], df["grid_x"].iloc[i+1] - df["grid_x"].iloc[i-1]))
+                angle = (np.arctan2(df["grid_y"].iloc[i+1] - df["grid_y"].iloc[i-1],\
+			df["grid_x"].iloc[i+1] - df["grid_x"].iloc[i-1]))
             angles.append((90 - ( (180/np.pi) * angle ) + 360) % 360)
         df["angle"] = np.round(angles, 3)
         df["speed"] = np.round(speed, 3)
+        df["speed_inst"] = np.round(speed_inst, 3)
     else:
-        print("SHAPE LESS THAN 1")
-        print(df)
         df["angle"] = np.nan
         df["speed"] = np.nan
+        df["speed_inst"] = np.nan
     return df
 
 def get_object_center(obj_id, labeled_image):
@@ -179,7 +191,7 @@ def single_max(obj_ind, raw, params):
     return True
 
 
-def get_object_prop(image1, grid1, field, record, params):
+def get_object_prop(image1, grid1, field, record, params, radar1):
     """ Returns dictionary of object properties for all objects found in
     image1. 
     """
@@ -232,14 +244,14 @@ def get_object_prop(image1, grid1, field, record, params):
 
         # raw 3D grid stats
         obj_slices = [raw3D[:, ind[0], ind[1]] for ind in obj_index]
-        field_max.append(np.nanmax(obj_slices))
+        field_max.append(np.round(np.nanmax(obj_slices), 3))
         filtered_slices = [obj_slice > params['FIELD_THRESH']
                            for obj_slice in obj_slices]
         heights = [np.arange(raw3D.shape[0])[ind] for ind in filtered_slices]
         max_height.append(np.max(np.concatenate(heights)) * unit_alt)
         volume.append(np.sum(filtered_slices) * unit_vol)
 
-    #Get the number of local maxima using the column maximum reflectivity, 
+	#Get the number of local maxima using the column maximum reflectivity, 
         # considring only reflectivity above the background reflectivity + DEPTH. Local maxima 
         # must beand MIN_DISTANCE (in pixels) apart
         crop = np.where(image1==obj, np.nanmax(raw3D,axis=0), 0)
@@ -248,6 +260,30 @@ def get_object_prop(image1, grid1, field, record, params):
               exclude_border=0,
               min_distance=params["LOCAL_MAX_DIST"])
         local_max.append(len(local_max_inds))
+
+    # Have a look at rotation
+    lons, lats = np.meshgrid(grid1.to_xarray()["lon"].values, grid1.to_xarray()["lat"].values)
+    interp = NearestNDInterpolator(np.stack([lons.flatten(), lats.flatten()]).T, image1.flatten())
+    azi_shear36 = []
+    azi_shear02 = []
+    obj_36 = {k: [] for k in np.arange(nobj) + 1}
+    obj_02 = {k: [] for k in np.arange(nobj) + 1}
+    for s in np.arange(radar1.nsweeps):
+        polar_x = radar1.get_gate_lat_lon_alt(s)[1][:, radar1.range["data"] < np.max(grid1.x["data"])]
+        polar_y = radar1.get_gate_lat_lon_alt(s)[0][:, radar1.range["data"] < np.max(grid1.x["data"])]
+        polar_z = radar1.get_gate_lat_lon_alt(s)[2][:, radar1.range["data"] < np.max(grid1.x["data"])]
+        polar_obj = interp(polar_x, polar_y)
+        for obj in np.arange(nobj) + 1:
+            obj_36[obj].append(np.nanmax(np.abs(np.where( (polar_obj==obj) & (polar_z >= 3000) & (polar_z <= 6000),
+			    radar1.get_field(s, "azi_shear")[:, radar1.range["data"] < np.max(grid1.x["data"])],
+			    np.nan))))
+        for obj in np.arange(nobj) + 1:
+            obj_02[obj].append(np.nanmax(np.abs(np.where( (polar_obj==obj) & (polar_z >= 0) & (polar_z <= 2000),
+			    radar1.get_field(s, "azi_shear")[:, radar1.range["data"] < np.max(grid1.x["data"])],
+			    np.nan))))
+    for obj in np.arange(nobj) + 1:
+        azi_shear36.append(np.nanmax(obj_36[obj]))
+        azi_shear02.append(np.nanmax(obj_02[obj]))
 
     # cell isolation
     isolation = check_isolation(raw3D, image1, record.grid_size, params)
@@ -263,7 +299,9 @@ def get_object_prop(image1, grid1, field, record, params):
                'lon': longitude,
                'lat': latitude,
                'isolated': isolation,
-               'local_max': local_max}
+               'local_max': local_max,
+               'azi_shear36': azi_shear36,
+               'azi_shear02': azi_shear02}
 
     if params['SKIMAGE_PROPS']:
         rp = regionprops(image1, intensity_image=raw3D.max(axis=0))
@@ -296,10 +334,12 @@ def write_tracks(old_tracks, record, current_objects, obj_props, params):
         'lat': obj_props['lat'],
         'area_km': obj_props['area_km'],
         'vol': obj_props['volume'],
-        'max': obj_props['field_max'],
+        'field_max': obj_props['field_max'],
         'max_alt': obj_props['max_height'],
         'isolated': obj_props['isolated'],
         'local_max': np.round(obj_props['local_max'], 3),
+        'azi_shear36': np.round(obj_props['azi_shear36'], 3),
+        'azi_shear02': np.round(obj_props['azi_shear02'], 3),
     })
     if params['SKIMAGE_PROPS']:
         for p in params['SKIMAGE_PROPS']:
