@@ -191,7 +191,7 @@ def single_max(obj_ind, raw, params):
     return True
 
 
-def get_object_prop(image1, grid1, field, record, params, radar1):
+def get_object_prop(image1, grid1, field, record, params, radar1, azi_shear_flag):
     """ Returns dictionary of object properties for all objects found in
     image1. 
     """
@@ -261,29 +261,49 @@ def get_object_prop(image1, grid1, field, record, params, radar1):
               min_distance=params["LOCAL_MAX_DIST"])
         local_max.append(len(local_max_inds))
 
-    # Have a look at rotation
-    lons, lats = np.meshgrid(grid1.to_xarray()["lon"].values, grid1.to_xarray()["lat"].values)
-    interp = NearestNDInterpolator(np.stack([lons.flatten(), lats.flatten()]).T, image1.flatten())
     azi_shear36 = []
     azi_shear02 = []
-    obj_36 = {k: [] for k in np.arange(nobj) + 1}
-    obj_02 = {k: [] for k in np.arange(nobj) + 1}
-    for s in np.arange(radar1.nsweeps):
-        polar_x = radar1.get_gate_lat_lon_alt(s)[1][:, radar1.range["data"] < np.max(grid1.x["data"])]
-        polar_y = radar1.get_gate_lat_lon_alt(s)[0][:, radar1.range["data"] < np.max(grid1.x["data"])]
-        polar_z = radar1.get_gate_lat_lon_alt(s)[2][:, radar1.range["data"] < np.max(grid1.x["data"])]
-        polar_obj = interp(polar_x, polar_y)
+    if azi_shear_flag:
+        # Have a look at rotation
+        try:
+            radar1.nsweeps
+        except:
+            raise Exception("Azimuthal shear calculation flag is True, but radar objects does not have expected"+
+                            " properties. Ensure radar object has been given to get_tracks()")
+        #For the current image, set up an interpolator to interpolate each object to polar coords
+        lons, lats = np.meshgrid(grid1.to_xarray()["lon"].values, grid1.to_xarray()["lat"].values)
+        interp = NearestNDInterpolator(np.stack([lons.flatten(), lats.flatten()]).T, image1.flatten())
+        obj_36 = {k: [] for k in np.arange(nobj) + 1}
+        obj_02 = {k: [] for k in np.arange(nobj) + 1}
+        for s in np.arange(radar1.nsweeps):
+            #For each sweep of the radar object, interpolate the image to polar coords
+            polar_x = radar1.get_gate_lat_lon_alt(s)[1][:, radar1.range["data"] < np.max(grid1.x["data"])]
+            polar_y = radar1.get_gate_lat_lon_alt(s)[0][:, radar1.range["data"] < np.max(grid1.x["data"])]
+            polar_z = radar1.get_gate_lat_lon_alt(s)[2][:, radar1.range["data"] < np.max(grid1.x["data"])]
+            polar_obj = interp(polar_x, polar_y)
+            #For each object in the image at this sweep:
+            #   -> Mask the azi_shear radar field (in polar coords) outside of the object
+            #   -> Also mask between two heights (3-6 km and 0-2 km)
+            #   -> Take the maximum azi_shear over the object, and 'save' to a dict.
+            #TODO: Consider when the cell is over the radar (will look like shear). Consider noise (may
+            #        or may not be a problem for level 2 data). Fix the dealiase code in the
+            #        pre-processing step (not here), as function does not return an object. Also,
+            #        may need to assume a Nyquist velocity if Pyart can't work it out (~26 m/s)
+            for obj in np.arange(nobj) + 1:
+                obj_36[obj].append(np.nanmax(np.abs(np.where( (polar_obj==obj) & (polar_z >= 3000) & (polar_z <= 6000),
+    			    radar1.get_field(s, "azi_shear")[:, radar1.range["data"] < np.max(grid1.x["data"])],
+    			    np.nan))))
+            for obj in np.arange(nobj) + 1:
+                obj_02[obj].append(np.nanmax(np.abs(np.where( (polar_obj==obj) & (polar_z >= 0) & (polar_z <= 2000),
+    			    radar1.get_field(s, "azi_shear")[:, radar1.range["data"] < np.max(grid1.x["data"])],
+    			    np.nan))))
         for obj in np.arange(nobj) + 1:
-            obj_36[obj].append(np.nanmax(np.abs(np.where( (polar_obj==obj) & (polar_z >= 3000) & (polar_z <= 6000),
-			    radar1.get_field(s, "azi_shear")[:, radar1.range["data"] < np.max(grid1.x["data"])],
-			    np.nan))))
+            azi_shear36.append(np.nanmax(obj_36[obj]))
+            azi_shear02.append(np.nanmax(obj_02[obj]))
+    else:
         for obj in np.arange(nobj) + 1:
-            obj_02[obj].append(np.nanmax(np.abs(np.where( (polar_obj==obj) & (polar_z >= 0) & (polar_z <= 2000),
-			    radar1.get_field(s, "azi_shear")[:, radar1.range["data"] < np.max(grid1.x["data"])],
-			    np.nan))))
-    for obj in np.arange(nobj) + 1:
-        azi_shear36.append(np.nanmax(obj_36[obj]))
-        azi_shear02.append(np.nanmax(obj_02[obj]))
+            azi_shear36.append(np.nan)
+            azi_shear02.append(np.nan)
 
     # cell isolation
     isolation = check_isolation(raw3D, image1, record.grid_size, params)
@@ -347,6 +367,35 @@ def write_tracks(old_tracks, record, current_objects, obj_props, params):
                new_tracks[p] = np.round(obj_props[p], 3)
             except:
                new_tracks[p] = obj_props[p]
+
+    new_tracks.set_index(['scan', 'uid'], inplace=True)
+    tracks = old_tracks.append(new_tracks)
+    return tracks
+
+def write_null_tracks(old_tracks, record):
+    """ If there is no objects in a scan, write null output. """
+    print('Writing tracks for scan', record.scan)
+
+    scan_num = record.scan
+    uid = -1
+
+    new_tracks = pd.DataFrame({
+        'scan': scan_num,
+        'uid': [uid],
+        'time': record.time,
+        'grid_x': np.nan,
+        'grid_y': np.nan,
+        'lon': np.nan,
+        'lat': np.nan,
+        'area_km': np.nan,
+        'vol': np.nan,
+        'field_max': np.nan,
+        'max_alt': np.nan,
+        'isolated': np.nan,
+        'local_max': np.nan,
+        'azi_shear36': np.nan,
+        'azi_shear02': np.nan,
+    })
 
     new_tracks.set_index(['scan', 'uid'], inplace=True)
     tracks = old_tracks.append(new_tracks)

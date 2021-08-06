@@ -56,15 +56,16 @@ class Tracer(object):
 
     def plot(self, ax):
         for uid, group in self.history.groupby(level='uid'):
-            self._check_uid(uid)
-            tracer = group[['lon', 'lat']]
-            if self.persist or (uid in self.current.index):
-                ax.plot(tracer.lon, tracer.lat, self.cell_color[uid])
+            if int(uid) >= 0:
+                self._check_uid(uid)
+                tracer = group[['lon', 'lat']]
+                if self.persist or (uid in self.current.index):
+                    ax.plot(tracer.lon, tracer.lat, self.cell_color[uid])
 
 def full_domain(tobj, grids, tmp_dir, vmin=-8, vmax=64,
                 cmap=None, alt=None, isolated_only=False,
                 tracers=False, persist=False,
-                projection=None, **kwargs):
+                projection=None, extra_points=False, **kwargs):
     grid_size = tobj.grid_size
     if cmap is None:
         cmap = pyart.graph.cm_colorblind.HomeyerRainbow
@@ -100,6 +101,9 @@ def full_domain(tobj, grids, tmp_dir, vmin=-8, vmax=64,
                   >= tobj.params["FIELD_THRESH"],\
                   colors="k", transform=projection, levels=0, linewidths=1)
 
+        #Plot list 'extra_points' in (lat, lon)
+        [ax.plot(extra_points[i][1], extra_points[i][0], marker="o", color="k", ls="none") for i in np.arange(len(extra_points))]
+        
         if nframe in tobj.tracks.index.levels[0]:
             frame_tracks = tobj.tracks.loc[nframe]
 
@@ -276,7 +280,7 @@ def make_mp4_from_frames(tmp_dir, dest_dir, basename, fps):
 
 
 def animate(tobj, grids, outfile_name, style='full', fps=1, keep_frames=False,
-            overwrite=False, **kwargs):
+            overwrite=False, extra_points=False, **kwargs):
     """
     Creates gif animation of tracked cells.
 
@@ -306,6 +310,8 @@ def animate(tobj, grids, outfile_name, style='full', fps=1, keep_frames=False,
     overwrite : bool
         If true, will overwrite existing mp4 if one already exists.
         False, won't overwrite if file already exists.
+    extra_points: list
+        List of float sequences (lat, lon) for plotting on top of the map
 
     """
 
@@ -325,7 +331,7 @@ def animate(tobj, grids, outfile_name, style='full', fps=1, keep_frames=False,
     tmp_dir = tempfile.mkdtemp()
 
     try:
-        anim_func(tobj, grids, tmp_dir, **kwargs)
+        anim_func(tobj, grids, tmp_dir, extra_points=extra_points, **kwargs)
         if len(os.listdir(tmp_dir)) == 0:
             print('Grid generator is empty.')
             return

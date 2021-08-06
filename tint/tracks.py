@@ -18,7 +18,7 @@ from .helpers import Record, Counter
 from .phase_correlation import get_global_shift
 from .matching import get_pairs
 from .objects import init_current_objects, update_current_objects, calc_speed_and_dir
-from .objects import get_object_prop, write_tracks
+from .objects import get_object_prop, write_tracks, write_null_tracks
 from .write_griddata import Setup_h5File, write_griddata
 
 # Tracking Parameter Defaults
@@ -35,6 +35,7 @@ GS_ALT = 1500
 SKIMAGE_PROPS = False
 FIELD_DEPTH = 6
 LOCAL_MAX_DIST = 4
+AZI_SHEAR = False
 
 """
 Tracking Parameter Guide
@@ -158,10 +159,17 @@ class Cell_tracks(object):
         self.counter = self.__saved_counter
         self.current_objects = self.__saved_objects
 
-    def get_tracks(self, grids, radars, outdir):
+    def get_tracks(self, grids, outdir, radars):
         """ Obtains tracks given a list of pyart grid objects. This is the
         primary method of the tracks class. This method makes use of all of the
-        functions and helper classes defined above. """
+        functions and helper classes defined above. 
+        Note that radars (radar object generator) is only used for azimuthal shear,
+        so if AZI_SHEAR is False in the tracks_obj param list, then this can be a
+        generator of None objects, same length as the grids
+
+        e.g. grid_files = np.sort(glob.glob("/scratch/eg3/ab4502/tint/*grid.nc"))
+             grids = (pyart.io.read_grid(fn) for fn in grid_files)
+             (None for fn in grid_files)"""
         start_time = datetime.datetime.now()
 
         FirstLoop = True
@@ -219,6 +227,7 @@ class Cell_tracks(object):
                 newRain = True
                 print('No cells found in scan', self.record.scan)
                 self.current_objects = None
+                self.tracks = write_null_tracks(self.tracks, self.record)
                 continue
 
             global_shift = get_global_shift(raw1, raw2, self.params)
@@ -248,7 +257,7 @@ class Cell_tracks(object):
                 )
 
             obj_props = get_object_prop(frame1, grid_obj1, self.field,
-                                        self.record, self.params, radar_obj1)
+                                        self.record, self.params, radar_obj1, self.params["AZI_SHEAR"])
             self.record.add_uids(self.current_objects)
             self.tracks = write_tracks(self.tracks, self.record,
                                        self.current_objects, obj_props, self.params)
