@@ -36,6 +36,8 @@ SKIMAGE_PROPS = False
 FIELD_DEPTH = 6
 LOCAL_MAX_DIST = 4
 AZI_SHEAR = False
+AZH1 = 2
+AZH2 = 6
 
 """
 Tracking Parameter Guide
@@ -76,6 +78,13 @@ FIELD_DEPTH : units of 'field' attribute
 LOCAL_MAX_DIST : pixels
     When finding the number of local maxima in each object, candidates must
     be at least LOCAL_MAX_DIST pixels apart
+AZI_SHEAR_FLAG: bool
+    Whether or not to output the maximum azimuthal shear within the object (grid
+    must contain azimuthal shear)
+AZH1: float
+    The lower height to use for azimuthal shear (in km)
+AZH2: float
+    The upper height to use for azimuthal shear (in km)    
 """
 
 
@@ -91,6 +100,9 @@ class Cell_tracks(object):
     field : str
         String specifying pyart grid field to be used for tracking. Default is
         'reflectivity'.
+    az_field : str
+        String specifying pyart grid field to be used for azimithal shear. Default is
+        'azshear'.        
     grid_size : array
         Array containing z, y, and x mesh size in meters respectively.
     last_grid : Grid
@@ -114,7 +126,7 @@ class Cell_tracks(object):
 
     """
 
-    def __init__(self, field='reflectivity'):
+    def __init__(self, field='reflectivity', az_field="azshear"):
         self.params = {'FIELD_THRESH': FIELD_THRESH,
                        'MIN_SIZE': MIN_SIZE,
                        'SEARCH_MARGIN': SEARCH_MARGIN,
@@ -127,9 +139,13 @@ class Cell_tracks(object):
                        'GS_ALT': GS_ALT,
                        'SKIMAGE_PROPS' : SKIMAGE_PROPS,
                        'FIELD_DEPTH' : FIELD_DEPTH,
-                       'LOCAL_MAX_DIST' : LOCAL_MAX_DIST}
+                       'LOCAL_MAX_DIST' : LOCAL_MAX_DIST,
+                       'AZI_SHEAR' : AZI_SHEAR,
+                       'AZH1' : AZH1,
+                       'AZH2' : AZH2}
 
         self.field = field
+        self.az_field = az_field        
         self.grid_size = None
         self.radar_info = None
         self.last_grid = None
@@ -159,32 +175,23 @@ class Cell_tracks(object):
         self.counter = self.__saved_counter
         self.current_objects = self.__saved_objects
 
-    def get_tracks(self, grids, outdir, radars):
+    def get_tracks(self, grids, outdir):
         """ Obtains tracks given a list of pyart grid objects. This is the
         primary method of the tracks class. This method makes use of all of the
         functions and helper classes defined above. 
-        Note that radars (radar object generator) is only used for azimuthal shear,
-        so if AZI_SHEAR is False in the tracks_obj param list, then this can be a
-        generator of None objects, same length as the grids
-
-        e.g. grid_files = np.sort(glob.glob("/scratch/eg3/ab4502/tint/*grid.nc"))
-             grids = (pyart.io.read_grid(fn) for fn in grid_files)
-             (None for fn in grid_files)"""
+	"""
         start_time = datetime.datetime.now()
 
         FirstLoop = True
         if self.record is None:
             # tracks object being initialized
             grid_obj2 = next(grids)
-            radar_obj2 = next(radars)
             self.grid_size = get_grid_size(grid_obj2)
-            self.radar_info = get_radar_info(grid_obj2)
             self.counter = Counter()
             self.record = Record(grid_obj2)
         else:
             # tracks object being updated
             grid_obj2 = self.last_grid
-            radar_obj2 = self.last_radar
             self.tracks.drop(self.record.scan + 1)  # last scan is overwritten
 
         if self.current_objects is None:
@@ -197,16 +204,13 @@ class Cell_tracks(object):
 
         while grid_obj2 is not None:
             grid_obj1 = grid_obj2
-            radar_obj1 = radar_obj2
             raw1 = raw2
             frame1 = frame2
 
             try:
                 grid_obj2 = next(grids)
-                radar_obj2 = next(radars)
             except StopIteration:
                 grid_obj2 = None
-                radar_obj2 = None
 
             if grid_obj2 is not None:
                 self.record.update_scan_and_time(grid_obj1, grid_obj2)
@@ -218,7 +222,6 @@ class Cell_tracks(object):
                 # setup to write final scan
                 self.__save()
                 self.last_grid = grid_obj1
-                self.last_radar = radar_obj1
                 self.record.update_scan_and_time(grid_obj1)
                 raw2 = None
                 frame2 = np.zeros_like(frame1)
@@ -256,8 +259,8 @@ class Cell_tracks(object):
                     self.counter
                 )
 
-            obj_props = get_object_prop(frame1, grid_obj1, self.field,
-                                        self.record, self.params, radar_obj1, self.params["AZI_SHEAR"])
+            obj_props = get_object_prop(frame1, grid_obj1, self.field, self.az_field,
+                                        self.record, self.params)
             self.record.add_uids(self.current_objects)
             self.tracks = write_tracks(self.tracks, self.record,
                                        self.current_objects, obj_props, self.params)
@@ -267,7 +270,7 @@ class Cell_tracks(object):
                 outgrids = Setup_h5File(grid_obj1, outdir)
                 FirstLoop = False
             outgrids = write_griddata(outgrids,frame1,grid_obj1,self.field,self.current_objects,self.record,obj_props) 
-            del grid_obj1, raw1, frame1, global_shift, pairs, obj_props, radar_obj1
+            del grid_obj1, raw1, frame1, global_shift, pairs, obj_props
             # scan loop end
         self.__load()
         outgrids.close()

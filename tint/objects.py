@@ -13,8 +13,6 @@ from scipy import ndimage
 from skimage.measure import regionprops
 from skimage.feature import peak_local_max
 import datetime as dt
-from scipy.interpolate import NearestNDInterpolator
-from pymeso import llsd
 
 from .grid_utils import get_filtered_frame
 
@@ -191,7 +189,7 @@ def single_max(obj_ind, raw, params):
     return True
 
 
-def get_object_prop(image1, grid1, field, record, params, radar1, azi_shear_flag):
+def get_object_prop(image1, grid1, field, az_field, record, params):
     """ Returns dictionary of object properties for all objects found in
     image1. 
     """
@@ -206,6 +204,7 @@ def get_object_prop(image1, grid1, field, record, params, radar1, azi_shear_flag
     max_height = []
     volume = []
     local_max = []
+    azi_shear = []
     nobj = np.max(image1)
 
     skimage_props_km1 = ["major_axis_length", "minor_axis_length"]
@@ -218,7 +217,13 @@ def get_object_prop(image1, grid1, field, record, params, radar1, azi_shear_flag
     unit_vol = (unit_dim[0]*unit_dim[1]*unit_dim[2])/(1000**3)
 
     raw3D = grid1.fields[field]['data'].data
-
+    if params["AZI_SHEAR"]:
+        raw3D_az = grid1.fields[az_field]['data'].data
+        raw3D_az = np.where(raw3D_az == -9999, np.nan, raw3D_az)
+        az_hidx = (np.arange(raw3D.shape[0])*unit_alt >= params["AZH1"]) &\
+            (np.arange(raw3D.shape[0])*unit_alt <= params["AZH2"])
+        
+        
     for obj in np.arange(nobj) + 1:
         obj_index = np.argwhere(image1 == obj)
         id1.append(obj)
@@ -250,6 +255,12 @@ def get_object_prop(image1, grid1, field, record, params, radar1, azi_shear_flag
         heights = [np.arange(raw3D.shape[0])[ind] for ind in filtered_slices]
         max_height.append(np.max(np.concatenate(heights)) * unit_alt)
         volume.append(np.sum(filtered_slices) * unit_vol)
+        if params["AZI_SHEAR"]:
+            azi_shear.append(np.nanmax((np.where( (image1==obj) &\
+                (np.nanmax(raw3D, axis=0) >= params["FIELD_THRESH"]),\
+               (np.nanmax(np.abs(raw3D_az[az_hidx]), axis=0)), np.nan))))
+        else:
+            azi_shear.append(np.nan)
 
 	#Get the number of local maxima using the column maximum reflectivity, 
         # considring only reflectivity above the background reflectivity + DEPTH. Local maxima 
@@ -260,50 +271,6 @@ def get_object_prop(image1, grid1, field, record, params, radar1, azi_shear_flag
               exclude_border=0,
               min_distance=params["LOCAL_MAX_DIST"])
         local_max.append(len(local_max_inds))
-
-    azi_shear36 = []
-    azi_shear02 = []
-    if azi_shear_flag:
-        # Have a look at rotation
-        try:
-            radar1.nsweeps
-        except:
-            raise Exception("Azimuthal shear calculation flag is True, but radar objects does not have expected"+
-                            " properties. Ensure radar object has been given to get_tracks()")
-        #For the current image, set up an interpolator to interpolate each object to polar coords
-        lons, lats = np.meshgrid(grid1.to_xarray()["lon"].values, grid1.to_xarray()["lat"].values)
-        interp = NearestNDInterpolator(np.stack([lons.flatten(), lats.flatten()]).T, image1.flatten())
-        obj_36 = {k: [] for k in np.arange(nobj) + 1}
-        obj_02 = {k: [] for k in np.arange(nobj) + 1}
-        for s in np.arange(radar1.nsweeps):
-            #For each sweep of the radar object, interpolate the image to polar coords
-            polar_x = radar1.get_gate_lat_lon_alt(s)[1][:, radar1.range["data"] < np.max(grid1.x["data"])]
-            polar_y = radar1.get_gate_lat_lon_alt(s)[0][:, radar1.range["data"] < np.max(grid1.x["data"])]
-            polar_z = radar1.get_gate_lat_lon_alt(s)[2][:, radar1.range["data"] < np.max(grid1.x["data"])]
-            polar_obj = interp(polar_x, polar_y)
-            #For each object in the image at this sweep:
-            #   -> Mask the azi_shear radar field (in polar coords) outside of the object
-            #   -> Also mask between two heights (3-6 km and 0-2 km)
-            #   -> Take the maximum azi_shear over the object, and 'save' to a dict.
-            #TODO: Consider when the cell is over the radar (will look like shear). Consider noise (may
-            #        or may not be a problem for level 2 data). Fix the dealiase code in the
-            #        pre-processing step (not here), as function does not return an object. Also,
-            #        may need to assume a Nyquist velocity if Pyart can't work it out (~26 m/s)
-            for obj in np.arange(nobj) + 1:
-                obj_36[obj].append(np.nanmax(np.abs(np.where( (polar_obj==obj) & (polar_z >= 3000) & (polar_z <= 6000),
-    			    radar1.get_field(s, "azi_shear")[:, radar1.range["data"] < np.max(grid1.x["data"])],
-    			    np.nan))))
-            for obj in np.arange(nobj) + 1:
-                obj_02[obj].append(np.nanmax(np.abs(np.where( (polar_obj==obj) & (polar_z >= 0) & (polar_z <= 2000),
-    			    radar1.get_field(s, "azi_shear")[:, radar1.range["data"] < np.max(grid1.x["data"])],
-    			    np.nan))))
-        for obj in np.arange(nobj) + 1:
-            azi_shear36.append(np.nanmax(obj_36[obj]))
-            azi_shear02.append(np.nanmax(obj_02[obj]))
-    else:
-        for obj in np.arange(nobj) + 1:
-            azi_shear36.append(np.nan)
-            azi_shear02.append(np.nan)
 
     # cell isolation
     isolation = check_isolation(raw3D, image1, record.grid_size, params)
@@ -320,8 +287,7 @@ def get_object_prop(image1, grid1, field, record, params, radar1, azi_shear_flag
                'lat': latitude,
                'isolated': isolation,
                'local_max': local_max,
-               'azi_shear36': azi_shear36,
-               'azi_shear02': azi_shear02}
+               'azi_shear': azi_shear}
 
     if params['SKIMAGE_PROPS']:
         rp = regionprops(image1, intensity_image=raw3D.max(axis=0))
@@ -358,8 +324,7 @@ def write_tracks(old_tracks, record, current_objects, obj_props, params):
         'max_alt': obj_props['max_height'],
         'isolated': obj_props['isolated'],
         'local_max': np.round(obj_props['local_max'], 3),
-        'azi_shear36': np.round(obj_props['azi_shear36'], 3),
-        'azi_shear02': np.round(obj_props['azi_shear02'], 3),
+        'azi_shear': np.round(obj_props['azi_shear'], 3),
     })
     if params['SKIMAGE_PROPS']:
         for p in params['SKIMAGE_PROPS']:
@@ -393,8 +358,7 @@ def write_null_tracks(old_tracks, record):
         'max_alt': np.nan,
         'isolated': np.nan,
         'local_max': np.nan,
-        'azi_shear36': np.nan,
-        'azi_shear02': np.nan,
+        'azi_shear': np.nan
     })
 
     new_tracks.set_index(['scan', 'uid'], inplace=True)
