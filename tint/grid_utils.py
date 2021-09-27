@@ -20,7 +20,7 @@ def parse_grid_datetime(grid_obj):
     date = dt_string[:10]
     time = dt_string[11:19]
     dt0 = datetime.datetime.strptime(date + ' ' + time, '%Y-%m-%d %H:%M:%S')
-    dt = datetime.timedelta(seconds=grid_obj.time['data'][0]) + dt0
+    dt = datetime.timedelta(seconds=float(grid_obj.time['data'][0])) + dt0
     return dt
 
 
@@ -53,17 +53,17 @@ def get_vert_projection(grid, thresh=40):
     return np.any(grid > thresh, axis=0)
 
 
-def get_filtered_frame(grid, min_size, thresh):
+def get_filtered_frame(grid, min_size, min_vol, min_height, thresh):
     """ Returns a labeled frame from gridded radar data. Smaller objects
     are removed and the rest are labeled. """
     echo_height = get_vert_projection(grid, thresh)
     labeled_echo = ndimage.label(echo_height)[0]
-    frame = clear_small_echoes(labeled_echo, min_size)
+    frame = clear_small_echoes(labeled_echo, grid, min_size, min_vol, min_height, thresh)
     return frame
 
 
-def clear_small_echoes(label_image, min_size):
-    """ Takes in binary image and clears objects less than min_size. """
+def clear_small_echoes(label_image, grid, min_size, min_vol, min_height, thresh):
+    """ Takes in binary image and clears objects less than min_size, min_height and min_vol. """
     flat_image = pd.Series(label_image.flatten())
     flat_image = flat_image[flat_image > 0]
     size_table = flat_image.value_counts(sort=False)
@@ -71,18 +71,27 @@ def clear_small_echoes(label_image, min_size):
 
     for obj in small_objects:
         label_image[label_image == obj] = 0
+
+    for obj in np.unique(label_image):
+        if obj > 0:
+            heights = (np.where(grid[:,label_image==obj] > thresh))[0]
+            if (((grid[:,label_image == obj] > thresh).sum()) < min_vol) | \
+                         ((heights.max() - heights.min()) < min_height):
+                label_image[label_image == obj] = 0
+
     label_image = ndimage.label(label_image)
     return label_image[0]
-
 
 def extract_grid_data(grid_obj, field, grid_size, params):
     """ Returns filtered grid frame and raw grid slice at global shift
     altitude. """
     min_size = params['MIN_SIZE'] / np.prod(grid_size[1:]/1000)
+    min_vol = params['MIN_VOL'] / np.prod(grid_size/1000)
+    min_height = params['MIN_HGT'] / np.prod(grid_size[0]/1000)
     masked = grid_obj.fields[field]['data']
     masked.data[masked.data == masked.fill_value] = 0
     gs_alt = params['GS_ALT']
     raw = masked.data[get_grid_alt(grid_size, gs_alt), :, :]
-    frame = get_filtered_frame(masked.data, min_size,
+    frame = get_filtered_frame(masked.data, min_size, min_vol, min_height,
                                params['FIELD_THRESH'])
     return raw, frame

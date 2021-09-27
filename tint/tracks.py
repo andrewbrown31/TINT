@@ -17,7 +17,7 @@ from .grid_utils import get_grid_size, get_radar_info, extract_grid_data
 from .helpers import Record, Counter
 from .phase_correlation import get_global_shift
 from .matching import get_pairs
-from .objects import init_current_objects, update_current_objects, calc_speed_and_dir
+from .objects import init_current_objects, update_current_objects, calc_speed_and_dir, num_of_scans
 from .objects import get_object_prop, write_tracks, write_null_tracks
 from .write_griddata import Setup_h5File, write_griddata
 
@@ -26,6 +26,8 @@ FIELD_THRESH = 32
 ISO_THRESH = 8
 ISO_SMOOTH = 3
 MIN_SIZE = 8
+MIN_VOL = 30
+MIN_HGT = 2
 SEARCH_MARGIN = 4000
 FLOW_MARGIN = 10000
 MAX_DISPARITY = 999
@@ -33,8 +35,8 @@ MAX_FLOW_MAG = 50
 MAX_SHIFT_DISP = 15
 GS_ALT = 1500
 SKIMAGE_PROPS = False
-FIELD_DEPTH = 6
 LOCAL_MAX_DIST = 4
+STEINER = False
 AZI_SHEAR = False
 AZH1 = 2
 AZH2 = 6
@@ -51,9 +53,14 @@ ISO_THRESH : units of 'field' attribute
     to any other cell by contiguous pixels above this threshold.
 ISO_SMOOTH : pixels
     Gaussian smoothing parameter in peak detection preprocessing. See
-    single_max in tint.objects.
+    single_max in tint.objects. Also used in defining the number of 
+    local maxima in objects.py
 MIN_SIZE : square kilometers
-    The minimum size threshold in pixels for an object to be detected.
+    The minimum size threshold for an object to be detected.
+MIN_VOL : kilometers cubed
+    The minimum size threshold for an object to be detected.
+MIN_HEIGHT : kilometers
+    The minimum height of an object based on the lowest and heighest exceedences of field_thresh.
 SEARCH_MARGIN : meters
     The radius of the search box around the predicted object center.
 FLOW_MARGIN : meters
@@ -72,9 +79,6 @@ GS_ALT : meters
     Altitude in meters at which to perform phase correlation for global shift
 SKIMAGE_PROPS : list of str
     Extra object properties to output from skimage.measure.regionprops
-FIELD_DEPTH : units of 'field' attribute
-    When finding the number of local maxima in each object, only consider
-    candiates above FIELD_THRESH + FIELD_DEPTH
 LOCAL_MAX_DIST : pixels
     When finding the number of local maxima in each object, candidates must
     be at least LOCAL_MAX_DIST pixels apart
@@ -85,6 +89,10 @@ AZH1: float
     The lower height to use for azimuthal shear (in km)
 AZH2: float
     The upper height to use for azimuthal shear (in km)    
+STEINER: bool
+    If true, load the corresponding level 2 Steiner classification grid file, and
+    determine convective percent for each object. Classification data is for 
+    2500 m AGL
 """
 
 
@@ -138,8 +146,8 @@ class Cell_tracks(object):
                        'ISO_SMOOTH': ISO_SMOOTH,
                        'GS_ALT': GS_ALT,
                        'SKIMAGE_PROPS' : SKIMAGE_PROPS,
-                       'FIELD_DEPTH' : FIELD_DEPTH,
                        'LOCAL_MAX_DIST' : LOCAL_MAX_DIST,
+                       'STEINER' : STEINER,
                        'AZI_SHEAR' : AZI_SHEAR,
                        'AZH1' : AZH1,
                        'AZH2' : AZH2}
@@ -175,7 +183,7 @@ class Cell_tracks(object):
         self.counter = self.__saved_counter
         self.current_objects = self.__saved_objects
 
-    def get_tracks(self, grids, outdir):
+    def get_tracks(self, grids, outdir, steiner):
         """ Obtains tracks given a list of pyart grid objects. This is the
         primary method of the tracks class. This method makes use of all of the
         functions and helper classes defined above. 
@@ -203,6 +211,9 @@ class Cell_tracks(object):
                                          self.params)
 
         while grid_obj2 is not None:
+             
+            print(self.record.time)
+
             grid_obj1 = grid_obj2
             raw1 = raw2
             frame1 = frame2
@@ -228,7 +239,7 @@ class Cell_tracks(object):
 
             if np.max(frame1) == 0:
                 newRain = True
-                print('No cells found in scan', self.record.scan)
+                print('No cells found in scan')
                 self.current_objects = None
                 self.tracks = write_null_tracks(self.tracks, self.record)
                 continue
@@ -259,21 +270,35 @@ class Cell_tracks(object):
                     self.counter
                 )
 
+            if self.params["STEINER"]:
+                steiner_grid = steiner.sel({"time":self.record.time}).values
+            else:
+                steiner_grid = None
+
             obj_props = get_object_prop(frame1, grid_obj1, self.field, self.az_field,
-                                        self.record, self.params)
+                                        self.record, self.params, steiner_grid)
             self.record.add_uids(self.current_objects)
             self.tracks = write_tracks(self.tracks, self.record,
                                        self.current_objects, obj_props, self.params)
-            #From the tracks pandas DataFrame, get the speed and direction at each time for each uid
-            self.tracks = self.tracks.groupby("uid").apply(calc_speed_and_dir, dx=self.record.grid_size[1])
             if FirstLoop:
                 outgrids = Setup_h5File(grid_obj1, outdir)
                 FirstLoop = False
             outgrids = write_griddata(outgrids,frame1,grid_obj1,self.field,self.current_objects,self.record,obj_props) 
             del grid_obj1, raw1, frame1, global_shift, pairs, obj_props
             # scan loop end
+        #From the tracks pandas DataFrame, get the speed and direction at each time for each uid as well as the number of scans
+	# and track duration
+        if self.tracks.reset_index().uid.astype(int).max() >= 0:
+            self.tracks = self.tracks.groupby("uid").apply(calc_speed_and_dir, dx=self.record.grid_size[1])
+            self.tracks = self.tracks.groupby("uid").apply(num_of_scans)
+        else:
+            self.tracks["angle"] = np.nan; self.tracks["angle_inst"] = np.nan
+            self.tracks["speed"] = np.nan; self.tracks["speed_inst"] = np.nan
         self.__load()
-        outgrids.close()
+        try:
+            outgrids.close()
+        except:
+            print("INFO: There were no storms tracked for this radar/time period")
         time_elapsed = datetime.datetime.now() - start_time
         print('\n')
         print('time elapsed', np.round(time_elapsed.seconds/60, 1), 'minutes')

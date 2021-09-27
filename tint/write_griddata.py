@@ -9,31 +9,23 @@ def Setup_h5File(grid1,outdir):
     #TODO EDIT GLOABL ATTRS
     savef=h5py.File(outdir,'w')
     savef.attrs['proj']=np.string_('pyart_aeqd')
-    savef.attrs['orig_field_name']=np.string_('reflectivity_cal_cor')
-    savef.attrs['product_fields_info']=np.string_('name: reflectivity volume  units:dBz,\
-                                             name: cell_mask units: binary')
     savef.attrs['lon_0']=grid1.origin_longitude['data'][0]
     savef.attrs['lat_0']=grid1.origin_latitude['data'][0]
     savef.attrs['nx']=grid1.nx
     savef.attrs['ny']=grid1.ny
-    savef.attrs['dx']='1 km'
-    savef.attrs['dy']='1 km'
     savef.attrs['x_minmax']=grid1.x['data'].min(),grid1.x['data'].max()
     savef.attrs['y_minmax']=grid1.y['data'].min(),grid1.y['data'].max()
     savef.attrs['outergroup']=np.string_('Time, formatted %H%M%S')
     savef.attrs['innergroup']=np.string_('Unique object ID (uid)')
     savef.attrs['created']=np.string_(datetime.datetime.now().strftime('%Y%m%d %H:%M:%S'))
     savef.attrs['source']=np.string_('Australian Open Radar Dataset V1.0 Level 1b data')
-    savef.attrs['acknowlegement']=np.string_('This work is supported by the ARC Centre for \
-          Excellence in Climate Extremes using a modified version of TINT \
-          (https://github.com/openradar/TINT). Thanks Jordan Brook and Joshua Soderholm \
-          for guidence and original dataset. Thanks Todd Lane for support.')
-    savef.attrs['creator_name']=np.string_('Stacey Hitchcock')
-    savef.attrs['creator_email']=np.string_('Stacey.Hitchcock@unimelb.edu.au')
+    savef.attrs['creator_name']=np.string_('Andrew Brown')
+    savef.attrs['creator_email']=np.string_('andrewb1@student.unimelb.edu.au')
     savef.attrs['host']=np.string_('NCI - National Computing Infrastructure')
-    savef.attrs['site_name']=np.string_('Melb') #will need to be modified if you expand
-    savef.attrs['state']=np.string_('VIC')
-    savef.attrs['country']=np.string_('Australia')
+    #TODO
+    #The following line doesn't work. Probably need to loop over grid1 metadata keys and append to savef
+    for key in grid1.metadata.keys():
+        savef.attrs["source_"+key] = grid1.metadata[key]
 
     #Save grid lat, lon as level 1 groups, for reconstruction later
     lon, lat = grid1.get_point_longitude_latitude()
@@ -48,8 +40,6 @@ def Setup_h5File(grid1,outdir):
     return savef
 
 def write_griddata(savef,image1,grid1,field,current_objects,record,obj_props):
-    print('Writing h5 files for scan', record.scan)
-
     nobj = len(obj_props['id1'])
     scan_num = [record.scan] * nobj
     uids = current_objects['uid']
@@ -81,6 +71,9 @@ def write_griddata(savef,image1,grid1,field,current_objects,record,obj_props):
 #       recon = np.zeros(x.shape)
 #       recon[bbox[0]:bbox[2],bbox[1]:bbox[3]] = f[group_id+"/cell_mask"][:]
 #       plt.pcolormesh(x,y,recon)
+
+	#To get group_id from csv track output
+	#df["group_id"] = pd.DatetimeIndex(df["time"]).strftime("%Y%m%d%H%M%S") + "/" + df["uid"].astype(str)
 
     return savef
 

@@ -102,7 +102,8 @@ def full_domain(tobj, grids, tmp_dir, vmin=-8, vmax=64,
                   colors="k", transform=projection, levels=0, linewidths=1)
 
         #Plot list 'extra_points' in (lat, lon)
-        [ax.plot(extra_points[i][1], extra_points[i][0], marker="o", color="k", ls="none") for i in np.arange(len(extra_points))]
+        if extra_points:
+            [ax.plot(extra_points[i][1], extra_points[i][0], marker="o", color="k", ls="none") for i in np.arange(len(extra_points))]
         
         if nframe in tobj.tracks.index.levels[0]:
             frame_tracks = tobj.tracks.loc[nframe]

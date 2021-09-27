@@ -13,6 +13,7 @@ from scipy import ndimage
 from skimage.measure import regionprops
 from skimage.feature import peak_local_max
 import datetime as dt
+from scipy.stats.mstats import theilslopes
 
 from .grid_utils import get_filtered_frame
 
@@ -20,20 +21,35 @@ def calc_speed_and_dir(df, dx):
     """From a pandas dataframe, use the grid_x, grid_y and time columns to calculate speed and 
     direction. Returns both an instantaneous (central finite difference) and average
     (based on linear least squares regression fit to distance/time) speed, as well as 
-    direction based on central difference"""
-    if df.shape[0] > 1:
+    direction based on central difference. Note direction is the angle from north that
+    the cell is moving TOWARDS"""
+    #First check if the storm exists in more than one scan and the uid is not -1 (representing
+    # a scan with no storms)
+    if (df.shape[0] > 1) & (int(df.reset_index().uid.iloc[0])>=0):
+	#Fit a linear polynomial to the distance (from start point) and time of a storm uid.
+	#Use the slope to estimate the speed (m/s)
         x, y, t0 = (df["grid_x"].values, df["grid_y"].values, df["time"].iloc[0])
         dist = np.cumsum(np.concatenate(([0], [np.sqrt(np.square(x[i-1] - x[i]) + \
 		np.square(y[i-1] - y[i]))  for i in np.arange(1, len(x))]))) 
         times = pd.to_datetime(df["time"]) - t0
         delta_t = (times / np.arange(df.shape[0])).mean().seconds
+	#Also estimate the instantaneous speed using a central difference
         speed_inst = np.gradient(dist * dx, delta_t)
         yp = dist * dx
         xp = np.array([t.seconds for t in times])
-        fit = np.polyfit(xp, yp, deg=1)
+        fit = theilslopes(yp, xp)
         speed = fit[0]
+        speed_rnge = fit[3] - fit[2]
 
-        angles = []
+	#Fit a linear polynomial to the x-y grid space for a storm uid.
+	#Use the fitted polynomial to estimate the angle of propogation
+        fit_xy = np.polyfit(x,y,deg=1)
+        yf = np.polyval(fit_xy, x)
+        angle_fit = np.arctan2(yf[-1] - yf[0], x[-1] - x[0])
+        angle_fit = (90 - ( (180/np.pi) * angle_fit ) + 360) % 360
+
+	#Also calculate the instantaneous angle using a central difference 
+        angles_inst = []
         for i in np.arange(df.shape[0]):
             if i == 0:
                 angle = (np.arctan2(df["grid_y"].iloc[i+1] - df["grid_y"].iloc[i],\
@@ -44,14 +60,29 @@ def calc_speed_and_dir(df, dx):
             else:
                 angle = (np.arctan2(df["grid_y"].iloc[i+1] - df["grid_y"].iloc[i-1],\
 			df["grid_x"].iloc[i+1] - df["grid_x"].iloc[i-1]))
-            angles.append((90 - ( (180/np.pi) * angle ) + 360) % 360)
-        df["angle"] = np.round(angles, 3)
+            angles_inst.append((90 - ( (180/np.pi) * angle ) + 360) % 360)
+        df["angle"] = np.round(angle_fit, 3)
+        df["angle_inst"] = np.round(angles_inst, 3)
         df["speed"] = np.round(speed, 3)
+        df["speed_rnge"] = np.round(speed_rnge, 3)
         df["speed_inst"] = np.round(speed_inst, 3)
     else:
         df["angle"] = np.nan
+        df["angle_inst"] = np.nan
         df["speed"] = np.nan
+        df["speed_rnge"] = np.nan
         df["speed_inst"] = np.nan
+    return df
+
+def num_of_scans(df):
+    """For pandas track output, simply append the number of scans in each output as well as the duration"""
+    #TODO: Develop for time also? (e.g. rather than just scans)
+    if (int(df.reset_index().uid.iloc[0])==-1):
+        df["num_of_scans"] = 0
+        df["duration_mins"] = np.nan
+    else:
+        df["num_of_scans"] = df.shape[0]
+        df["duration_mins"] = (df.time.max() - df.time.min()).seconds / 60.
     return df
 
 def get_object_center(obj_id, labeled_image):
@@ -153,8 +184,12 @@ def check_isolation(raw, filtered, grid_size, params):
     and have at most one peak. """
     nobj = np.max(filtered)
     min_size = params['MIN_SIZE'] / np.prod(grid_size[1:]/1000)
+    min_vol = params['MIN_VOL'] / np.prod(grid_size/1000)
+    min_height = params['MIN_HGT'] / np.prod(grid_size[0]/1000)
     iso_filtered = get_filtered_frame(raw,
                                       min_size,
+                                      min_vol,
+                                      min_height,
                                       params['ISO_THRESH'])
     nobj_iso = np.max(iso_filtered)
     iso = np.empty(nobj, dtype='bool')
@@ -189,7 +224,7 @@ def single_max(obj_ind, raw, params):
     return True
 
 
-def get_object_prop(image1, grid1, field, az_field, record, params):
+def get_object_prop(image1, grid1, field, az_field, record, params, steiner):
     """ Returns dictionary of object properties for all objects found in
     image1. 
     """
@@ -198,13 +233,17 @@ def get_object_prop(image1, grid1, field, az_field, record, params):
     grid_x = []
     grid_y = []
     area = []
+    dist_min = []
+    dist_max = []
     longitude = []
     latitude = []
     field_max = []
+    min_height = []
     max_height = []
     volume = []
     local_max = []
     azi_shear = []
+    conv_pct = []
     nobj = np.max(image1)
 
     skimage_props_km1 = ["major_axis_length", "minor_axis_length"]
@@ -216,13 +255,20 @@ def get_object_prop(image1, grid1, field, az_field, record, params):
     unit_area = (unit_dim[1]*unit_dim[2])/(1000**2)
     unit_vol = (unit_dim[0]*unit_dim[1]*unit_dim[2])/(1000**3)
 
+    #Set up azimuthal shear 3d array
     raw3D = grid1.fields[field]['data'].data
     if params["AZI_SHEAR"]:
-        raw3D_az = grid1.fields[az_field]['data'].data
-        raw3D_az = np.where(raw3D_az == -9999, np.nan, raw3D_az)
-        az_hidx = (np.arange(raw3D.shape[0])*unit_alt >= params["AZH1"]) &\
-            (np.arange(raw3D.shape[0])*unit_alt <= params["AZH2"])
-        
+        try:
+           raw3D_az = grid1.fields[az_field]['data'].data
+           raw3D_az = np.where(raw3D_az == -9999, np.nan, raw3D_az)
+           az_hidx = (np.arange(raw3D.shape[0])*unit_alt >= params["AZH1"]) &\
+               (np.arange(raw3D.shape[0])*unit_alt <= params["AZH2"])
+        except:
+           raise ValueError("AZI_SHEAR parameter is TRUE, but can't find "+az_field+" in the grid file")
+
+    #Set up distance array
+    x, y = np.meshgrid(grid1.x["data"], grid1.y["data"])
+    dist = np.sqrt(np.square(x) + np.square(y))
         
     for obj in np.arange(nobj) + 1:
         obj_index = np.argwhere(image1 == obj)
@@ -254,6 +300,7 @@ def get_object_prop(image1, grid1, field, az_field, record, params):
                            for obj_slice in obj_slices]
         heights = [np.arange(raw3D.shape[0])[ind] for ind in filtered_slices]
         max_height.append(np.max(np.concatenate(heights)) * unit_alt)
+        min_height.append(np.min(np.concatenate(heights)) * unit_alt)
         volume.append(np.sum(filtered_slices) * unit_vol)
         if params["AZI_SHEAR"]:
             azi_shear.append(np.nanmax((np.where( (image1==obj) &\
@@ -263,14 +310,28 @@ def get_object_prop(image1, grid1, field, az_field, record, params):
             azi_shear.append(np.nan)
 
 	#Get the number of local maxima using the column maximum reflectivity, 
-        # considring only reflectivity above the background reflectivity + DEPTH. Local maxima 
-        # must beand MIN_DISTANCE (in pixels) apart
+        #Local maxima must beand MIN_DISTANCE (in pixels) apart
         crop = np.where(image1==obj, np.nanmax(raw3D,axis=0), 0)
-        local_max_inds = peak_local_max(crop, indices=True,
-              threshold_abs=np.nanmin(np.where(image1==obj, np.nanmax(raw3D,axis=0), np.nan)) + params["FIELD_DEPTH"],
+        local_max_inds = peak_local_max( ndimage.filters.gaussian_filter(crop, params["ISO_SMOOTH"]),
+              indices=True,
               exclude_border=0,
               min_distance=params["LOCAL_MAX_DIST"])
         local_max.append(len(local_max_inds))
+
+        #Get maximum and minimum distance of the object from the radar
+        obj_dist = np.where(image1==obj, dist, np.nan)/1000.
+        obj_dist_min, obj_dist_max = (np.nanmin(obj_dist), np.nanmax(obj_dist))
+        dist_min.append(obj_dist_min)
+        dist_max.append(obj_dist_max)
+
+        if params["STEINER"]:
+            steiner_slice = np.where(image1==obj, steiner, np.nan)
+            if (steiner_slice>=1).sum() == 0:
+                conv_pct.append(np.nan)
+            else:
+                conv_pct.append((steiner_slice==2).sum() / (steiner_slice>=1).sum())
+        else:
+            conv_pct.append(np.nan)
 
     # cell isolation
     isolation = check_isolation(raw3D, image1, record.grid_size, params)
@@ -280,13 +341,17 @@ def get_object_prop(image1, grid1, field, az_field, record, params):
                'grid_x': grid_x,
                'grid_y': grid_y,
                'area_km': area,
+               'dist_min': dist_min,
+               'dist_max': dist_max,
                'field_max': field_max,
+               'min_height': min_height,
                'max_height': max_height,
                'volume': volume,
                'lon': longitude,
                'lat': latitude,
                'isolated': isolation,
                'local_max': local_max,
+               'conv_pct': conv_pct,
                'azi_shear': azi_shear}
 
     if params['SKIMAGE_PROPS']:
@@ -304,7 +369,6 @@ def get_object_prop(image1, grid1, field, az_field, record, params):
 
 def write_tracks(old_tracks, record, current_objects, obj_props, params):
     """ Writes all cell information to tracks dataframe. """
-    print('Writing tracks for scan', record.scan)
 
     nobj = len(obj_props['id1'])
     scan_num = [record.scan] * nobj
@@ -319,12 +383,16 @@ def write_tracks(old_tracks, record, current_objects, obj_props, params):
         'lon': obj_props['lon'],
         'lat': obj_props['lat'],
         'area_km': obj_props['area_km'],
+        'dist_min': np.round(obj_props['dist_min'],3),
+        'dist_max': np.round(obj_props['dist_max'],3),
         'vol': obj_props['volume'],
         'field_max': obj_props['field_max'],
+        'min_alt': obj_props['min_height'],
         'max_alt': obj_props['max_height'],
         'isolated': obj_props['isolated'],
         'local_max': np.round(obj_props['local_max'], 3),
         'azi_shear': np.round(obj_props['azi_shear'], 3),
+        'conv_pct': np.round(obj_props['conv_pct'], 3),
     })
     if params['SKIMAGE_PROPS']:
         for p in params['SKIMAGE_PROPS']:
@@ -339,7 +407,6 @@ def write_tracks(old_tracks, record, current_objects, obj_props, params):
 
 def write_null_tracks(old_tracks, record):
     """ If there is no objects in a scan, write null output. """
-    print('Writing tracks for scan', record.scan)
 
     scan_num = record.scan
     uid = -1
@@ -353,12 +420,16 @@ def write_null_tracks(old_tracks, record):
         'lon': np.nan,
         'lat': np.nan,
         'area_km': np.nan,
+        'dist_min': np.nan,
+        'dist_max': np.nan,
         'vol': np.nan,
         'field_max': np.nan,
+        'min_alt': np.nan,
         'max_alt': np.nan,
         'isolated': np.nan,
         'local_max': np.nan,
-        'azi_shear': np.nan
+        'azi_shear': np.nan,
+        'conv_pct': np.nan
     })
 
     new_tracks.set_index(['scan', 'uid'], inplace=True)
