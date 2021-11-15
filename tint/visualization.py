@@ -85,6 +85,8 @@ def full_domain(tobj, grids, tmp_dir, vmin=-8, vmax=64,
     print('Animating', nframes, 'frames')
 
     for nframe, grid in enumerate(grids):
+        lon2 = grid.to_xarray().lon.values
+        lat2 = grid.to_xarray().lat.values
         fig_grid = plt.figure(figsize=(10, 8))
         print('Frame:', nframe)
         display = pyart.graph.GridMapDisplay(grid)
@@ -96,10 +98,11 @@ def full_domain(tobj, grids, tmp_dir, vmin=-8, vmax=64,
                           cmap=cmap, transform=projection, ax=ax, **kwargs)
 
         #Plot FIELD_THRESH outline 
-        x,y=np.meshgrid(grid.to_xarray()["lon"], grid.to_xarray()["lat"])
-        ax.contour(x,y,grid.to_xarray()[tobj.field].max(["time","z"]) \
-                  >= tobj.params["FIELD_THRESH"],\
-                  colors="k", transform=projection, levels=0, linewidths=1)
+        #x,y=np.meshgrid(grid.to_xarray()["lon"], grid.to_xarray()["lat"])
+        #ax.contour(x,y,grid.to_xarray()[tobj.field].max(["time","z"]) \
+                  #>= tobj.params["FIELD_THRESH"],\
+                  #colors="k", transform=projection, levels=0, linewidths=1)
+
 
         #Plot list 'extra_points' in (lat, lon)
         if extra_points:
@@ -119,6 +122,9 @@ def full_domain(tobj, grids, tmp_dir, vmin=-8, vmax=64,
                 y = frame_tracks['lat'].iloc[ind]
                 ax.text(x, y, uid, transform=projection, fontsize=20)
 
+                #Plot bounding box
+                y1,x1,y2,x2 = frame_tracks.iloc[ind]["bbox"]
+                ax.plot([lon2[x1],lon2[x2-1],lon2[x2-1],lon2[x1],lon2[x1]], [lat2[y1],lat2[y1],lat2[y2-1],lat2[y2-1],lat2[y1]], color="k", ls="--")
 
         plt.savefig(tmp_dir + '/frame_' + str(nframe).zfill(3) + '.png',
                     bbox_inches = 'tight', dpi=300)

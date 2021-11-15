@@ -303,9 +303,9 @@ def get_object_prop(image1, grid1, field, az_field, record, params, steiner):
         min_height.append(np.min(np.concatenate(heights)) * unit_alt)
         volume.append(np.sum(filtered_slices) * unit_vol)
         if params["AZI_SHEAR"]:
-            azi_shear.append(np.nanmax((np.where( (image1==obj) &\
+            azi_shear.append(np.nanpercentile((np.where( (image1==obj) &\
                 (np.nanmax(raw3D, axis=0) >= params["FIELD_THRESH"]),\
-               (np.nanmax(np.abs(raw3D_az[az_hidx]), axis=0)), np.nan))))
+               (np.nanmax(np.abs(raw3D_az[az_hidx]), axis=0)), np.nan)), 99.5))
         else:
             azi_shear.append(np.nan)
 

@@ -12,6 +12,7 @@ import datetime
 import numpy as np
 import pandas as pd
 from scipy import ndimage
+import tobac
 
 
 def parse_grid_datetime(grid_obj):
@@ -79,8 +80,14 @@ def clear_small_echoes(label_image, grid, min_size, min_vol, min_height, thresh)
                          ((heights.max() - heights.min()) < min_height):
                 label_image[label_image == obj] = 0
 
-    label_image = ndimage.label(label_image)
-    return label_image[0]
+    #label_image = ndimage.label(label_image)
+    #return label_image[0]
+    cnt=1
+    for obj in np.unique(label_image):
+        if obj > 0:
+            label_image[label_image==obj] = cnt
+            cnt=cnt+1
+    return label_image
 
 def extract_grid_data(grid_obj, field, grid_size, params):
     """ Returns filtered grid frame and raw grid slice at global shift
@@ -89,9 +96,45 @@ def extract_grid_data(grid_obj, field, grid_size, params):
     min_vol = params['MIN_VOL'] / np.prod(grid_size/1000)
     min_height = params['MIN_HGT'] / np.prod(grid_size[0]/1000)
     masked = grid_obj.fields[field]['data']
-    masked.data[masked.data == masked.fill_value] = 0
+    #masked.data[masked.data == masked.fill_value] = 0
+    masked[masked.mask] = 0
     gs_alt = params['GS_ALT']
     raw = masked.data[get_grid_alt(grid_size, gs_alt), :, :]
-    frame = get_filtered_frame(masked.data, min_size, min_vol, min_height,
+
+    if params["SEGMENTATION_METHOD"] == "thresh":
+        frame = get_filtered_frame(masked.data, min_size, min_vol, min_height,
                                params['FIELD_THRESH'])
+
+    elif params["SEGMENTATION_METHOD"] == "watershed":
+
+	#Instead of labelling the 2D grid using scipy ndimage (which just gets > THRESH
+	#   objects) with get_filtered_frame(), use watershedding from tobac
+	#This requires a conversion from the pyart grid object to an Iris cube
+        colmax = grid_obj.to_xarray()[field].max("z")
+        for n in colmax.coords:
+            if n not in ["time","x","y"]:
+                colmax = colmax.drop(n)
+        colmax = colmax.where(~colmax.isnull(),0).to_iris()
+        
+        #Set the segmentation and feature ID parameters for tobac. This will need to 
+        # be set as an option in the TINT parameter set, eventually.
+        parameters_features={}
+        parameters_segmentation={}
+        parameters_features['position_threshold']='weighted_diff'
+        parameters_features['sigma_threshold']=params["WATERSHED_SMOOTHING"]
+        parameters_features['threshold']=params["WATERSHED_THRESH"]
+        parameters_features['threshold']=params["WATERSHED_THRESH"]
+        parameters_features['n_erosion_threshold']=params["WATERSHED_EROSION"]
+        parameters_segmentation['threshold']=params["FIELD_THRESH"]
+        
+        #Run the tobac segmentation
+        Features=tobac.feature_detection.feature_detection_multithreshold(colmax,grid_size[1],**parameters_features)
+        Mask_refl,Features=tobac.segmentation.segmentation(Features,colmax,grid_size[1],**parameters_segmentation)
+        
+        #Clear small objects
+        frame=clear_small_echoes(Mask_refl.data, masked.data, params["MIN_SIZE"], params["MIN_VOL"], params["MIN_HGT"], params['FIELD_THRESH'])
+        
+    else:
+        raise ValueError("SEGMENTATION METHOD "+params["SEGMENTATION_METHOD"]+" IS NOT VALID. SHOULD BE thresh OR watershed")
+
     return raw, frame

@@ -33,13 +33,17 @@ FLOW_MARGIN = 10000
 MAX_DISPARITY = 999
 MAX_FLOW_MAG = 50
 MAX_SHIFT_DISP = 15
-GS_ALT = 1500
+GS_ALT = 2500
 SKIMAGE_PROPS = False
 LOCAL_MAX_DIST = 4
 STEINER = False
 AZI_SHEAR = False
 AZH1 = 2
 AZH2 = 6
+SEGMENTATION_METHOD = "watershed"
+WATERSHED_SMOOTHING = 0.5
+WATERSHED_EROSION = 0
+WATERSHED_THRESH = [32,36,40]
 
 """
 Tracking Parameter Guide
@@ -93,6 +97,22 @@ STEINER: bool
     If true, load the corresponding level 2 Steiner classification grid file, and
     determine convective percent for each object. Classification data is for 
     2500 m AGL
+SEGMENTATION_METHOD: str
+    Should be either waterhed (default) or thresh. Watershed uses the tobac
+    package for a multi-threshold approach, with smoothing given by
+    WATERSHED_SMOOTHING and thresholds given by WATERSHED_THRESH. Thresh option
+    uses the default TINT method, which is to separate contiguous objects greater
+    than a single threshold
+WATERSHED_SMOOTHING: float
+    Sigma parameter for gaussian smoothing in watershed segmentation. Defaults to
+    0.5 as in tobac.
+WATERSHED_THRESH: arr
+    Thresholds to be used for segmentation with watershed method, in same units as
+    FIELD_THRESH. For example, [30, 35, 50] (dBz). The first element of WATERSHED_THRESH
+    should be equal to FIELD_THRESH
+WATERSHED_EROSION: int
+    From tobac: number of pixel by which to erode the identified features. In 
+    segmentation step
 """
 
 
@@ -150,7 +170,11 @@ class Cell_tracks(object):
                        'STEINER' : STEINER,
                        'AZI_SHEAR' : AZI_SHEAR,
                        'AZH1' : AZH1,
-                       'AZH2' : AZH2}
+                       'AZH2' : AZH2,
+                       'SEGMENTATION_METHOD' : SEGMENTATION_METHOD,
+                       'WATERSHED_SMOOTHING' : WATERSHED_SMOOTHING,
+                       'WATERSHED_EROSION' : WATERSHED_EROSION,
+                       'WATERSHED_THRESH' : WATERSHED_THRESH}
 
         self.field = field
         self.az_field = az_field        
@@ -189,6 +213,10 @@ class Cell_tracks(object):
         functions and helper classes defined above. 
 	"""
         start_time = datetime.datetime.now()
+
+        #if self.params["SEGMENTATION_METHOD"]=="watershed":
+        #    assert self.params["WATERSHED_THRESH"][0] == self.params["FIELD_THRESH"],\
+        #        "The first watershed threshold must be equal to FIELD_THRESH"
 
         FirstLoop = True
         if self.record is None:
