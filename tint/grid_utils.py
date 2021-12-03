@@ -127,14 +127,18 @@ def extract_grid_data(grid_obj, field, grid_size, params):
         parameters_features['n_erosion_threshold']=params["WATERSHED_EROSION"]
         parameters_segmentation['threshold']=params["FIELD_THRESH"]
         
-        #Run the tobac segmentation
+        #Run the tobac feature detection
         Features=tobac.feature_detection.feature_detection_multithreshold(colmax,grid_size[1],**parameters_features)
-        Mask_refl,Features=tobac.segmentation.segmentation(Features,colmax,grid_size[1],**parameters_segmentation)
-        
-        #Clear small objects
-        frame=clear_small_echoes(Mask_refl.data, masked.data, params["MIN_SIZE"], params["MIN_VOL"], params["MIN_HGT"], params['FIELD_THRESH'])
+        if Features is None:
+           frame = np.zeros(masked.data.shape)
+        else:
+           #Segmentation using tobac based on a single threshold and Feature locations
+           Mask_refl,Features=tobac.segmentation.segmentation(Features,colmax,grid_size[1],**parameters_segmentation)
+           #Clear small objects
+           frame=clear_small_echoes(Mask_refl.data, masked.data, params["MIN_SIZE"], params["MIN_VOL"], params["MIN_HGT"], params['FIELD_THRESH'])
         
     else:
+
         raise ValueError("SEGMENTATION METHOD "+params["SEGMENTATION_METHOD"]+" IS NOT VALID. SHOULD BE thresh OR watershed")
 
     return raw, frame

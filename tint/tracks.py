@@ -23,6 +23,7 @@ from .write_griddata import Setup_h5File, write_griddata
 
 # Tracking Parameter Defaults
 FIELD_THRESH = 32
+ETH_THRESH = 18
 ISO_THRESH = 8
 ISO_SMOOTH = 3
 MIN_SIZE = 8
@@ -52,6 +53,8 @@ Tracking Parameter Guide
 FIELD_THRESH : units of 'field' attribute
     The threshold used for object detection. Detected objects are connnected
     pixels above this threshold.
+ETH_THRESH : units of 'field' attribute
+    The threshold to use to detect echo top height (ETH) and the top of the storm object
 ISO_THRESH : units of 'field' attribute
     Used in isolated cell classification. Isolated cells must not be connected
     to any other cell by contiguous pixels above this threshold.
@@ -156,6 +159,7 @@ class Cell_tracks(object):
 
     def __init__(self, field='reflectivity', az_field="azshear"):
         self.params = {'FIELD_THRESH': FIELD_THRESH,
+                       'ETH_THRESH': ETH_THRESH,
                        'MIN_SIZE': MIN_SIZE,
                        'SEARCH_MARGIN': SEARCH_MARGIN,
                        'FLOW_MARGIN': FLOW_MARGIN,

@@ -240,6 +240,7 @@ def get_object_prop(image1, grid1, field, az_field, record, params, steiner):
     field_max = []
     min_height = []
     max_height = []
+    eth = []
     volume = []
     local_max = []
     azi_shear = []
@@ -298,8 +299,12 @@ def get_object_prop(image1, grid1, field, az_field, record, params, steiner):
         field_max.append(np.round(np.nanmax(obj_slices), 3))
         filtered_slices = [obj_slice > params['FIELD_THRESH']
                            for obj_slice in obj_slices]
+        filtered_slices_eth = [obj_slice > params['ETH_THRESH']
+                           for obj_slice in obj_slices]
         heights = [np.arange(raw3D.shape[0])[ind] for ind in filtered_slices]
+        eth_heights = [np.arange(raw3D.shape[0])[ind] for ind in filtered_slices_eth]
         max_height.append(np.max(np.concatenate(heights)) * unit_alt)
+        eth.append(np.max(np.concatenate(eth_heights)) * unit_alt)
         min_height.append(np.min(np.concatenate(heights)) * unit_alt)
         volume.append(np.sum(filtered_slices) * unit_vol)
         if params["AZI_SHEAR"]:
@@ -310,7 +315,7 @@ def get_object_prop(image1, grid1, field, az_field, record, params, steiner):
             azi_shear.append(np.nan)
 
 	#Get the number of local maxima using the column maximum reflectivity, 
-        #Local maxima must beand MIN_DISTANCE (in pixels) apart
+        #Local maxima must be MIN_DISTANCE (in pixels) apart
         crop = np.where(image1==obj, np.nanmax(raw3D,axis=0), 0)
         local_max_inds = peak_local_max( ndimage.filters.gaussian_filter(crop, params["ISO_SMOOTH"]),
               indices=True,
@@ -346,6 +351,7 @@ def get_object_prop(image1, grid1, field, az_field, record, params, steiner):
                'field_max': field_max,
                'min_height': min_height,
                'max_height': max_height,
+               'eth': eth,
                'volume': volume,
                'lon': longitude,
                'lat': latitude,
@@ -389,6 +395,7 @@ def write_tracks(old_tracks, record, current_objects, obj_props, params):
         'field_max': obj_props['field_max'],
         'min_alt': obj_props['min_height'],
         'max_alt': obj_props['max_height'],
+        'eth': obj_props['eth'],
         'isolated': obj_props['isolated'],
         'local_max': np.round(obj_props['local_max'], 3),
         'azi_shear': np.round(obj_props['azi_shear'], 3),
@@ -426,6 +433,7 @@ def write_null_tracks(old_tracks, record):
         'field_max': np.nan,
         'min_alt': np.nan,
         'max_alt': np.nan,
+        'eth': np.nan,
         'isolated': np.nan,
         'local_max': np.nan,
         'azi_shear': np.nan,
