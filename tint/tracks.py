@@ -303,12 +303,19 @@ class Cell_tracks(object):
                 )
 
             if self.params["STEINER"]:
-                steiner_grid = steiner.sel({"time":self.record.time}).values
-            else:
-                steiner_grid = None
-
-            obj_props = get_object_prop(frame1, grid_obj1, self.field, self.az_field,
+                if self.record.time in steiner.time.values:
+                    steiner_grid = steiner.sel({"time":self.record.time}).values
+                    obj_props = get_object_prop(frame1, grid_obj1, self.field, self.az_field,
                                         self.record, self.params, steiner_grid)
+                else:
+                    self.params["STEINER"]=False
+                    obj_props = get_object_prop(frame1, grid_obj1, self.field, self.az_field,
+                                        self.record, self.params, None)
+                    self.params["STEINER"]=True
+            else:
+                obj_props = get_object_prop(frame1, grid_obj1, self.field, self.az_field,
+                                        self.record, self.params, None)
+
             self.record.add_uids(self.current_objects)
             self.tracks = write_tracks(self.tracks, self.record,
                                        self.current_objects, obj_props, self.params)
