@@ -21,6 +21,9 @@ Dependencies
 - `cartopy <https://scitools.org.uk/cartopy/docs/latest/>`_
 - `Py-ART <http://arm-doe.github.io/pyart/>`_
 - `ffmpeg <https://www.ffmpeg.org/>`_
+EDIT (AB)
+- `tobac <https://github.com/climate-processes/tobac>`_
+
 
 Install
 -------
