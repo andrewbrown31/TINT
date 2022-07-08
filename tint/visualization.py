@@ -123,8 +123,11 @@ def full_domain(tobj, grids, tmp_dir, vmin=-8, vmax=64,
                 ax.text(x, y, uid, transform=projection, fontsize=20)
 
                 #Plot bounding box
-                y1,x1,y2,x2 = frame_tracks.iloc[ind]["bbox"]
-                ax.plot([lon2[x1],lon2[x2-1],lon2[x2-1],lon2[x1],lon2[x1]], [lat2[y1],lat2[y1],lat2[y2-1],lat2[y2-1],lat2[y1]], color="k", ls="--")
+                try:
+                    y1,x1,y2,x2 = frame_tracks.iloc[ind]["bbox"]
+                    ax.plot([lon2[x1],lon2[x2-1],lon2[x2-1],lon2[x1],lon2[x1]], [lat2[y1],lat2[y1],lat2[y2-1],lat2[y2-1],lat2[y1]], color="k", ls="--")
+                except:
+                    print("No objects to plot")
 
         plt.savefig(tmp_dir + '/frame_' + str(nframe).zfill(3) + '.png',
                     bbox_inches = 'tight', dpi=300)

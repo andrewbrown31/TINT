@@ -45,6 +45,7 @@ SEGMENTATION_METHOD = "watershed"
 WATERSHED_SMOOTHING = 0.5
 WATERSHED_EROSION = 0
 WATERSHED_THRESH = [32,36,40]
+MIN_FIELD = FIELD_THRESH
 
 """
 Tracking Parameter Guide
@@ -116,6 +117,12 @@ WATERSHED_THRESH: arr
 WATERSHED_EROSION: int
     From tobac: number of pixel by which to erode the identified features. In 
     segmentation step
+MIN_FIELD: float
+    In units of FIELD_THRESH - objects are cleared if there is no pixel of at least this value.
+    Defaults to the same as FIELD_THRESH. For example, in application to convective clouds, you 
+    might use a threshold of 20 dBZ to capture broad straiftorm region, but you can use MIN_FIELD
+    to impose that at least one pixel within the object must be greater than a threshold, 30 dBZ
+    for example.
 """
 
 
@@ -178,7 +185,8 @@ class Cell_tracks(object):
                        'SEGMENTATION_METHOD' : SEGMENTATION_METHOD,
                        'WATERSHED_SMOOTHING' : WATERSHED_SMOOTHING,
                        'WATERSHED_EROSION' : WATERSHED_EROSION,
-                       'WATERSHED_THRESH' : WATERSHED_THRESH}
+                       'WATERSHED_THRESH' : WATERSHED_THRESH,
+                       'MIN_FIELD' : MIN_FIELD}
 
         self.field = field
         self.az_field = az_field        

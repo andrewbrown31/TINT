@@ -54,16 +54,16 @@ def get_vert_projection(grid, thresh=40):
     return np.any(grid > thresh, axis=0)
 
 
-def get_filtered_frame(grid, min_size, min_vol, min_height, thresh):
+def get_filtered_frame(grid, min_size, min_vol, min_height, thresh, min_field):
     """ Returns a labeled frame from gridded radar data. Smaller objects
     are removed and the rest are labeled. """
     echo_height = get_vert_projection(grid, thresh)
     labeled_echo = ndimage.label(echo_height)[0]
-    frame = clear_small_echoes(labeled_echo, grid, min_size, min_vol, min_height, thresh)
+    frame = clear_small_echoes(labeled_echo, grid, min_size, min_vol, min_height, thresh, min_field)
     return frame
 
 
-def clear_small_echoes(label_image, grid, min_size, min_vol, min_height, thresh):
+def clear_small_echoes(label_image, grid, min_size, min_vol, min_height, thresh, min_field):
     """ Takes in binary image and clears objects less than min_size, min_height and min_vol. """
     flat_image = pd.Series(label_image.flatten())
     flat_image = flat_image[flat_image > 0]
@@ -76,8 +76,12 @@ def clear_small_echoes(label_image, grid, min_size, min_vol, min_height, thresh)
     for obj in np.unique(label_image):
         if obj > 0:
             heights = (np.where(grid[:,label_image==obj] > thresh))[0]
+            #If the object doesn't meet the min. volume requirement
+            #If the object doesn't meet the min. hgt requirement
+            #If the object doesn't meet the min field (e.g., reflectivity) threshold
             if (((grid[:,label_image == obj] > thresh).sum()) < min_vol) | \
-                         ((heights.max() - heights.min()) < min_height):
+                         ((heights.max() - heights.min()) < min_height) | \
+			(grid[:,label_image == obj].max() < min_field):
                 label_image[label_image == obj] = 0
 
     #label_image = ndimage.label(label_image)
@@ -103,7 +107,7 @@ def extract_grid_data(grid_obj, field, grid_size, params):
 
     if params["SEGMENTATION_METHOD"] == "thresh":
         frame = get_filtered_frame(masked.data, min_size, min_vol, min_height,
-                               params['FIELD_THRESH'])
+                               params['FIELD_THRESH'],params["MIN_FIELD"])
 
     elif params["SEGMENTATION_METHOD"] == "watershed":
 
@@ -120,12 +124,13 @@ def extract_grid_data(grid_obj, field, grid_size, params):
         # be set as an option in the TINT parameter set, eventually.
         parameters_features={}
         parameters_segmentation={}
-        parameters_features['position_threshold']='weighted_diff'
+        parameters_features['position_threshold']='extreme'
         parameters_features['sigma_threshold']=params["WATERSHED_SMOOTHING"]
         parameters_features['threshold']=params["WATERSHED_THRESH"]
         parameters_features['threshold']=params["WATERSHED_THRESH"]
         parameters_features['n_erosion_threshold']=params["WATERSHED_EROSION"]
         parameters_segmentation['threshold']=params["FIELD_THRESH"]
+        parameters_segmentation['sigma_threshold']=params["WATERSHED_SMOOTHING"]
         
         #Run the tobac feature detection
         Features=tobac.feature_detection.feature_detection_multithreshold(colmax,grid_size[1],**parameters_features)
@@ -135,7 +140,8 @@ def extract_grid_data(grid_obj, field, grid_size, params):
            #Segmentation using tobac based on a single threshold and Feature locations
            Mask_refl,Features=tobac.segmentation.segmentation(Features,colmax,grid_size[1],**parameters_segmentation)
            #Clear small objects
-           frame=clear_small_echoes(Mask_refl.data, masked.data, params["MIN_SIZE"], params["MIN_VOL"], params["MIN_HGT"], params['FIELD_THRESH'])
+           #frame=clear_small_echoes(Mask_refl.data, masked.data, params["MIN_SIZE"], params["MIN_VOL"], params["MIN_HGT"], params['FIELD_THRESH'])
+           frame=clear_small_echoes(Mask_refl.data, masked.data, min_size, min_vol, min_height, params['FIELD_THRESH'], params["MIN_FIELD"])
         
     else:
 

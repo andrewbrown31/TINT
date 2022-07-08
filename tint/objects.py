@@ -18,7 +18,7 @@ from scipy.stats.mstats import theilslopes
 from .grid_utils import get_filtered_frame
 
 def calc_speed_and_dir(df, dx):
-    """From a pandas dataframe, use the grid_x, grid_y and time columns to calculate speed and 
+    """From a pandas dataframe, use the grid_x, grid_y and time columns to calculate speed (m/s) and 
     direction. Returns both an instantaneous (central finite difference) and average
     (based on linear least squares regression fit to distance/time) speed, as well as 
     direction based on central difference. Note direction is the angle from north that
@@ -190,7 +190,8 @@ def check_isolation(raw, filtered, grid_size, params):
                                       min_size,
                                       min_vol,
                                       min_height,
-                                      params['ISO_THRESH'])
+                                      params['ISO_THRESH'],
+                                      params["MIN_FIELD"])
     nobj_iso = np.max(iso_filtered)
     iso = np.empty(nobj, dtype='bool')
 
@@ -259,13 +260,13 @@ def get_object_prop(image1, grid1, field, az_field, record, params, steiner):
     #Set up azimuthal shear 3d array
     raw3D = grid1.fields[field]['data'].data
     if params["AZI_SHEAR"]:
-        try:
+        if az_field in list(grid1.fields.keys()):
            raw3D_az = grid1.fields[az_field]['data'].data
            raw3D_az = np.where(raw3D_az == -9999, np.nan, raw3D_az)
            az_hidx = (np.arange(raw3D.shape[0])*unit_alt >= params["AZH1"]) &\
                (np.arange(raw3D.shape[0])*unit_alt <= params["AZH2"])
-        except:
-           raise ValueError("AZI_SHEAR parameter is TRUE, but can't find "+az_field+" in the grid file")
+        else:
+           print("AZI_SHEAR parameter is TRUE, but can't find "+az_field+" in the grid file for"+pyart.util.datetime_from_grid(grid1).strftime())
 
     #Set up distance array
     x, y = np.meshgrid(grid1.x["data"], grid1.y["data"])
@@ -308,9 +309,12 @@ def get_object_prop(image1, grid1, field, az_field, record, params, steiner):
         min_height.append(np.min(np.concatenate(heights)) * unit_alt)
         volume.append(np.sum(filtered_slices) * unit_vol)
         if params["AZI_SHEAR"]:
-            azi_shear.append(np.nanpercentile((np.where( (image1==obj) &\
-                (np.nanmax(raw3D, axis=0) >= params["FIELD_THRESH"]),\
-               (np.nanmax(np.abs(raw3D_az[az_hidx]), axis=0)), np.nan)), 99.5))
+            if az_field in list(grid1.fields.keys()):
+                azi_shear.append(np.nanpercentile((np.where( (image1==obj) &\
+                    (np.nanmax(raw3D, axis=0) >= params["FIELD_THRESH"]),\
+                   (np.nanmax(np.abs(raw3D_az[az_hidx]), axis=0)), np.nan)), 99.5))
+            else:
+                azi_shear.append(np.nan)
         else:
             azi_shear.append(np.nan)
 
